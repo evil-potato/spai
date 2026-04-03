@@ -254,11 +254,14 @@ def train(
 
     optimizer = build_optimizer(config, model, logger, is_pretrain=False)
     scaler = None
+    amp_state = None  # For saving AMP state in checkpoint
     if config.AMP_OPT_LEVEL != "O0":
         if use_torch_amp:
             scaler = amp.GradScaler()
+            amp_state = scaler  # Save scaler for checkpoint
         else:
             model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
+            amp_state = amp  # Save amp for checkpoint
     model_without_ddp = model
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -295,6 +298,7 @@ def train(
         log_writer,
         neptune_run,
         scaler,
+        amp_state,
         save_all=save_all
     )
 
@@ -900,6 +904,7 @@ def train_model(
     log_writer,
     neptune_run,
     scaler,
+    amp_state=None,
     save_all: bool = False
 ) -> None:
     logger.info("Start training")
@@ -963,7 +968,7 @@ def train_model(
         # Save only the checkpoints that decrease validation loss.
         if len(val_loss_per_epoch) == 1 or loss < min(val_loss_per_epoch[:-1]) or save_all:
             save_checkpoint(config, epoch, model_without_ddp, max(val_accuracy_per_epoch),
-                            optimizer, lr_scheduler, logger)
+                            optimizer, lr_scheduler, logger, amp_state)
 
         # Test the model.
         for test_data_loader, test_dataset, test_data_name in zip(data_loaders_test,

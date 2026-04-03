@@ -13,6 +13,10 @@ None检查：在所有访问 neptune_run 的地方添加 if neptune_run is not N
 训练结束时的 val/auc、val/ap、val/accuracy、val/loss 日志。
 总训练时间的 train/total_train_time 日志。
 原因：Neptune初始化可能失败（例如缺少API token），导致 neptune_run 为 None，直接访问会抛出 TypeError。
-4. 其他辅助修复
+4. 检查点保存修复 (spai/utils.py 和 spai/__main__.py)
+函数签名更新：修改 save_checkpoint() 以接受 amp_state=None 参数，并在保存状态时检查 amp_state 是否为 None，只有不为 None 时才保存 AMP 状态。
+参数传递：更新 train_model() 函数签名添加 amp_state 参数，并从 train() 传递给它。
+调用更新：修改 save_checkpoint() 调用，传递 amp_state 而不是 amp。
+5. 其他辅助修复
 命令行工具执行：建议使用 -m spai 模块执行方式，避免导入错误。
 参数优化：调整批大小（如 --batch-size 2）、特征提取批大小（如 --opt "MODEL.FEATURE_EXTRACTION_BATCH" "4"）等，以缓解CUDA OOM问题。

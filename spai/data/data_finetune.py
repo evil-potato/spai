@@ -75,8 +75,8 @@ class CSVDataset(torch.utils.data.Dataset):
         if split not in ["train", "val", "test"]:
             raise RuntimeError(f"Unsupported split: {split}")
 
-        # Path of the CSV file is expected to be absolute.
-        reader = readers.FileSystemReader(pathlib.Path("/"))
+        # Path of the CSV file is expected to be absolute or relative to current working directory.
+        reader = readers.FileSystemReader(pathlib.Path.cwd())
         self.entries: list[dict[str, Any]] = reader.read_csv_file(str(self.csv_path))
         self.entries = [e for e in self.entries if e[self.split_column] == self.split]
 
@@ -206,8 +206,8 @@ class CSVDatasetTriplet(torch.utils.data.Dataset):
         if split not in ["train", "val", "test"]:
             raise RuntimeError(f"Unsupported split: {split}")
 
-        # Path of the CSV file is expected to be absolute.
-        reader = readers.FileSystemReader(pathlib.Path("/"))
+        # Path of the CSV file is expected to be absolute or relative to current working directory.
+        reader = readers.FileSystemReader(pathlib.Path.cwd())
         self.entries: list[dict[str, Any]] = reader.read_csv_file(str(self.csv_path))
         self.entries = [e for e in self.entries if e[self.split_column] == self.split]
 
@@ -487,7 +487,7 @@ def build_dataset(
             csv_root_dir,
             split=split_name,
             transform=transform,
-            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH else None
+            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH and str(config.DATA.LMDB_PATH).strip() else None
         )
     elif split_name == "train" and config.TRAIN.LOSS == "supcont":
         assert config.DATA.AUGMENTED_VIEWS > 1, "SupCon loss requires at least 2 views."
@@ -497,7 +497,7 @@ def build_dataset(
             split=split_name,
             transform=transform,
             views=config.DATA.AUGMENTED_VIEWS,
-            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH else None
+            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH and str(config.DATA.LMDB_PATH).strip() else None
         )
     elif split_name == "train" and config.MODEL.RESOLUTION_MODE == "arbitrary":
         dataset = CSVDataset(
@@ -507,7 +507,7 @@ def build_dataset(
             transform=transform,
             views=config.DATA.AUGMENTED_VIEWS,
             concatenate_views_horizontally=True,
-            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH else None
+            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH and str(config.DATA.LMDB_PATH).strip() else None
         )
     else:
         views_generator: Optional[Callable[[Image.Image], tuple[Image.Image, ...]]]
@@ -542,7 +542,7 @@ def build_dataset(
             csv_root_dir,
             split=split_name,
             transform=transform,
-            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH else None,
+            lmdb_storage=pathlib.Path(config.DATA.LMDB_PATH) if config.DATA.LMDB_PATH and str(config.DATA.LMDB_PATH).strip() else None,
             views_generator=views_generator
         )
     num_classes: int = dataset.get_classes_num()

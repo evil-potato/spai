@@ -62,7 +62,20 @@ try:
     # noinspection PyUnresolvedReferences
     from apex import amp
 except ImportError:
-    amp = None
+    try:
+        import apex.amp as amp
+    except Exception:
+        amp = None
+
+# Fallback to PyTorch's built-in AMP if Apex is not available
+use_torch_amp = False
+if amp is None:
+    try:
+        import torch.cuda.amp as torch_amp
+        amp = torch_amp
+        use_torch_amp = True
+    except ImportError:
+        pass
 
 cv2.setNumThreads(1)
 logger: Optional[logging.Logger] = None
@@ -162,7 +175,7 @@ def train(
         "learning_rate": learning_rate,
         "data_path": str(data_path),
         "csv_root_dir": str(csv_root_dir),
-        "lmdb_path": str(lmdb_path),
+        "lmdb_path": str(lmdb_path) if lmdb_path is not None else None,
         "pretrained": str(pretrained) if pretrained is not None else None,
         "resume": resume,
         "accumulation_steps": accumulation_steps,
@@ -224,10 +237,15 @@ def train(
         config, logger, is_pretrain=False, is_test=False
     )
 
-    neptune_run = neptune.init_run(
-        name=config.TAG,
-        tags=["mfm", "train", config.TRAIN.MODE, data_path.stem]
-    )
+    # Initialize Neptune with error handling
+    try:
+        neptune_run = neptune.init_run(
+            name=config.TAG,
+            tags=["mfm", "train", config.TRAIN.MODE, data_path.stem]
+        )
+    except Exception as e:
+        logger.warning(f"Neptune initialization failed: {e}. Continuing without Neptune logging.")
+        neptune_run = None
 
     logger.info(f"Creating model:{config.MODEL.TYPE}/{config.MODEL.NAME}")
     model = build_cls_model(config)
@@ -235,8 +253,12 @@ def train(
     logger.info(str(model))
 
     optimizer = build_optimizer(config, model, logger, is_pretrain=False)
+    scaler = None
     if config.AMP_OPT_LEVEL != "O0":
-        model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
+        if use_torch_amp:
+            scaler = amp.GradScaler()
+        else:
+            model, optimizer = amp.initialize(model, optimizer, opt_level=config.AMP_OPT_LEVEL)
     model_without_ddp = model
 
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -272,6 +294,7 @@ def train(
         lr_scheduler,
         log_writer,
         neptune_run,
+        scaler,
         save_all=save_all
     )
 
@@ -366,10 +389,16 @@ def test(
 
     neptune_tags: list[str] = ["mfm", "test"]
     neptune_tags.extend([p.stem for p in test_csv])
-    neptune_run = neptune.init_run(
-        name=config.TAG,
-        tags=neptune_tags
-    )
+    
+    # Initialize Neptune with error handling
+    try:
+        neptune_run = neptune.init_run(
+            name=config.TAG,
+            tags=neptune_tags
+        )
+    except Exception as e:
+        logger.warning(f"Neptune initialization failed: {e}. Continuing without Neptune logging.")
+        neptune_run = None
 
     test_datasets_names, test_datasets, test_loaders = build_loader_test(config, logger,
                                                                          split=split)
@@ -413,10 +442,12 @@ def test(
                         f"Images: {len(test_dataset)} | AP: {ap:.3f}")
             logger.info(f"Test | {test_data_name} | Epoch {checkpoint_epoch}  | "
                         f"Images: {len(test_dataset)} | AUC: {auc:.3f}")
-            neptune_run[f"test/{test_data_name}/acc"].append(acc, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/ap"].append(ap, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/auc"].append(auc, step=checkpoint_epoch)
-            neptune_run[f"test/{test_data_name}/loss"].append(loss, step=checkpoint_epoch)
+            
+            if neptune_run is not None:
+                neptune_run[f"test/{test_data_name}/acc"].append(acc, step=checkpoint_epoch)
+                neptune_run[f"test/{test_data_name}/ap"].append(ap, step=checkpoint_epoch)
+                neptune_run[f"test/{test_data_name}/auc"].append(auc, step=checkpoint_epoch)
+                neptune_run[f"test/{test_data_name}/loss"].append(loss, step=checkpoint_epoch)
 
             if predictions is not None:
                 column_name: str = f"{tag}_epoch_{checkpoint_epoch}"
@@ -639,10 +670,16 @@ def tsne(
 
     neptune_tags: list[str] = ["mfm", "tsne"]
     neptune_tags.extend([p.stem for p in test_csv])
-    neptune_run = neptune.init_run(
-        name=config.TAG,
-        tags=neptune_tags
-    )
+    
+    # Initialize Neptune with error handling
+    try:
+        neptune_run = neptune.init_run(
+            name=config.TAG,
+            tags=neptune_tags
+        )
+    except Exception as e:
+        logger.warning(f"Neptune initialization failed: {e}. Continuing without Neptune logging.")
+        neptune_run = None
 
     test_datasets_names, test_datasets, test_loaders = build_loader_test(config, logger)
     model_ckpt: pathlib.Path = find_pretrained_checkpoints(config)[0]
@@ -862,6 +899,7 @@ def train_model(
     lr_scheduler,
     log_writer,
     neptune_run,
+    scaler,
     save_all: bool = False
 ) -> None:
     logger.info("Start training")
@@ -884,10 +922,13 @@ def train_model(
             epoch,
             lr_scheduler,
             log_writer,
-            neptune_run
+            neptune_run,
+            scaler
         )
-        neptune_run["train/last_epoch"] = epoch + 1
-        neptune_run["train/epochs_trained"] = epoch + 1 - config.TRAIN.START_EPOCH
+        
+        if neptune_run is not None:
+            neptune_run["train/last_epoch"] = epoch + 1
+            neptune_run["train/epochs_trained"] = epoch + 1 - config.TRAIN.START_EPOCH
 
         # Validate the model.
         acc: float
@@ -899,10 +940,11 @@ def train_model(
         logger.info(f"Val | Epoch {epoch} | Images: {len(dataset_val)} | ACC: {acc:.3f}")
         logger.info(f"Val | Epoch {epoch} | Images: {len(dataset_val)} | AP: {ap:.3f}")
         logger.info(f"Val | Epoch {epoch} | Images: {len(dataset_val)} | AUC: {auc:.3f}")
-        neptune_run["val/auc"].append(auc)
-        neptune_run["val/ap"].append(ap)
-        neptune_run["val/accuracy"].append(acc)
-        neptune_run["val/loss"].append(loss)
+        if neptune_run is not None:
+            neptune_run["val/auc"].append(auc)
+            neptune_run["val/ap"].append(ap)
+            neptune_run["val/accuracy"].append(acc)
+            neptune_run["val/loss"].append(loss)
 
         # Display the best epochs so far.
         val_accuracy_per_epoch.append(acc)
@@ -937,24 +979,27 @@ def train_model(
                         f"| AP: {ap:.3f}")
             logger.info(f"Test | {test_data_name} | Epoch {epoch} | Images: {len(test_dataset)} "
                         f"| AUC: {auc:.3f}")
-            neptune_run[f"test/{test_data_name}/acc"].append(acc)
-            neptune_run[f"test/{test_data_name}/ap"].append(ap)
-            neptune_run[f"test/{test_data_name}/auc"].append(auc)
-            neptune_run[f"test/{test_data_name}/loss"].append(loss if not np.isnan(loss) else -100.)
+            
+            if neptune_run is not None:
+                neptune_run[f"test/{test_data_name}/acc"].append(acc)
+                neptune_run[f"test/{test_data_name}/ap"].append(ap)
+                neptune_run[f"test/{test_data_name}/auc"].append(auc)
+                neptune_run[f"test/{test_data_name}/loss"].append(loss if not np.isnan(loss) else -100.)
 
         # Compute epoch time.
         epoch_time: float = time.time() - epoch_start_time
         logger.info(f"Epoch training time: {epoch_time:.3f}s")
-        neptune_run["train/epoch_train_time"].append(epoch_time)
-
+        
         if neptune_run is not None:
+            neptune_run["train/epoch_train_time"].append(epoch_time)
             neptune_run.sync()
 
     # Compute total training time.
     total_time: float = time.time() - start_time
     total_time_str: str = str(datetime.timedelta(seconds=int(total_time)))
     logger.info(f"Overall training time: {total_time_str}")
-    neptune_run["train/total_train_time"].append(total_time_str)
+    if neptune_run is not None:
+        neptune_run["train/total_train_time"].append(total_time_str)
 
 
 def train_one_epoch(
@@ -966,7 +1011,8 @@ def train_one_epoch(
     epoch,
     lr_scheduler,
     log_writer,
-    neptune_run
+    neptune_run,
+    scaler
 ):
     model.train()
     criterion.train()
@@ -1017,12 +1063,23 @@ def train_one_epoch(
                 loss = criterion(outputs, targets)
             loss = loss / config.TRAIN.ACCUMULATION_STEPS
             if config.AMP_OPT_LEVEL != "O0":
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
+                if use_torch_amp:
+                    scaler.scale(loss).backward()
                 else:
-                    grad_norm = get_grad_norm(amp.master_params(optimizer))
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                if config.TRAIN.CLIP_GRAD:
+                    if use_torch_amp:
+                        scaler.unscale_(optimizer)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+                    else:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
+                else:
+                    if use_torch_amp:
+                        scaler.unscale_(optimizer)
+                        grad_norm = get_grad_norm(model.parameters())
+                    else:
+                        grad_norm = get_grad_norm(amp.master_params(optimizer))
             else:
                 loss.backward()
                 if config.TRAIN.CLIP_GRAD:
@@ -1040,14 +1097,26 @@ def train_one_epoch(
                 loss = criterion(outputs.squeeze(), targets)
             optimizer.zero_grad()
             if config.AMP_OPT_LEVEL != "O0":
-                with amp.scale_loss(loss, optimizer) as scaled_loss:
-                    scaled_loss.backward()
-                if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(
-                        amp.master_params(optimizer), config.TRAIN.CLIP_GRAD
-                    )
+                if use_torch_amp:
+                    scaler.scale(loss).backward()
+                    if config.TRAIN.CLIP_GRAD:
+                        scaler.unscale_(optimizer)
+                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+                    else:
+                        scaler.unscale_(optimizer)
+                        grad_norm = get_grad_norm(model.parameters())
+                    scaler.step(optimizer)
+                    scaler.update()
                 else:
-                    grad_norm = get_grad_norm(amp.master_params(optimizer))
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                    if config.TRAIN.CLIP_GRAD:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            amp.master_params(optimizer), config.TRAIN.CLIP_GRAD
+                        )
+                    else:
+                        grad_norm = get_grad_norm(amp.master_params(optimizer))
+                    optimizer.step()
             else:
                 loss.backward()
                 if config.TRAIN.CLIP_GRAD:
@@ -1079,13 +1148,14 @@ def train_one_epoch(
             log_writer.add_scalar('train_loss', loss_value_reduce, epoch_1000x)
             log_writer.add_scalar('grad_norm', grad_norm_cpu, epoch_1000x)
             log_writer.add_scalar('lr', lr, epoch_1000x)
-            neptune_run["train/loss"].append(
-                inf_nan_to_num(loss_value_reduce, nan_value=-100., inf_value=-50.)
-            )
-            neptune_run["train/grad_norm"].append(
-                inf_nan_to_num(grad_norm_cpu,  nan_value=-100., inf_value=-50.)
-            )
-            neptune_run["train/lr"].append(lr)
+            if neptune_run is not None:
+                neptune_run["train/loss"].append(
+                    inf_nan_to_num(loss_value_reduce, nan_value=-100., inf_value=-50.)
+                )
+                neptune_run["train/grad_norm"].append(
+                    inf_nan_to_num(grad_norm_cpu,  nan_value=-100., inf_value=-50.)
+                )
+                neptune_run["train/lr"].append(lr)
 
         if idx % config.PRINT_FREQ == 0:
             memory_used = torch.cuda.max_memory_allocated() / (1024.0 * 1024.0)

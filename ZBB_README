@@ -1,0 +1,18 @@
+
+2026年4月3日
+复现环境适配：
+1. 数据加载问题修复 (spai/data/data_finetune.py)
+CSV路径问题：将硬编码路径 / 改为使用 pathlib.Path.cwd()，确保从当前工作目录读取CSV文件（如 ./datasets/ldm_train_val.csv）。
+LMDB路径安全：在 build_dataset() 中添加检查，如果 lmdb_path 为 None，则不使用LMDB数据库，避免字符串转换错误。
+2. AMP（混合精度）兼容性修复 (spai/__main__.py)
+Fallback逻辑：添加 torch.cuda.amp 的导入和检查，如果 apex 不可用，则使用 torch.cuda.amp 作为替代。
+Scaler传递：修改 train() 函数初始化scaler，更新 train_model() 和 train_one_epoch() 函数以正确处理scaler参数（支持Apex和torch AMP两种模式）。
+参数调整：确保AMP优化级别（如O2）能正常工作，避免CUDA OOM。
+3. Neptune日志安全修复 (spai/__main__.py)
+None检查：在所有访问 neptune_run 的地方添加 if neptune_run is not None: 检查，包括：
+训练结束时的 val/auc、val/ap、val/accuracy、val/loss 日志。
+总训练时间的 train/total_train_time 日志。
+原因：Neptune初始化可能失败（例如缺少API token），导致 neptune_run 为 None，直接访问会抛出 TypeError。
+4. 其他辅助修复
+命令行工具执行：建议使用 -m spai 模块执行方式，避免导入错误。
+参数优化：调整批大小（如 --batch-size 2）、特征提取批大小（如 --opt "MODEL.FEATURE_EXTRACTION_BATCH" "4"）等，以缓解CUDA OOM问题。

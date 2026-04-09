@@ -1,3 +1,40 @@
+数据集转换
+python -m spai.tools.create_dmid_ldm_train_val_csv \
+  --train_dir "./datasets/latent_diffusion_trainingset/train" \
+  --val_dir "./datasets/latent_diffusion_trainingset/val" \
+  --coco_dir "./datasets/coco2017" \
+  --lsun_dir "./datasets/progan" \
+  -o "./datasets/ldm_train_val.csv"
+
+训练命令
+CUDA_VISIBLE_DEVICES=2 python -m spai train \
+  --cfg "./configs/spai.yaml" \
+  --batch-size 16 \
+  --pretrained "./weights/mfm_pretrain_vit_base.pth" \
+  --output "./output/train_cuda_2" \
+  --data-path "./datasets/ldm_train_val.csv" \
+  --tag "spai" \
+  --amp-opt-level "O2" \
+  --data-workers 4 \
+  --save-all \
+  --opt "DATA.VAL_BATCH_SIZE" "32" \
+  --opt "MODEL.FEATURE_EXTRACTION_BATCH" "64" \
+  --opt "DATA.TEST_PREFETCH_FACTOR" "1" \
+  --opt "TRAIN.BASE_LR" "1.1e-4"
+
+ 测试命令
+CUDA_VISIBLE_DEVICES=3 python -m spai test \
+  --cfg "./configs/spai.yaml" \
+  --batch-size 8 \
+  --model "./weights/spai.pth" \
+  --output "./output/spai_test" \
+  --tag "spai" \
+  --opt "MODEL.PATCH_VIT.MINIMUM_PATCHES" "4" \
+  --opt "DATA.NUM_WORKERS" "4" \
+  --opt "MODEL.FEATURE_EXTRACTION_BATCH" "64" \
+  --opt "DATA.TEST_PREFETCH_FACTOR" "1" \
+  --test-csv "./data/eval_fake_dalle2_vs_all_real.csv"
+
 
 2026年4月3日
 复现环境适配：

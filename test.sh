@@ -7,32 +7,39 @@ MODELS=(
     # "./output/train/finetune/spai/ckpt_epoch_13.pth"
     # "./output/train/finetune/spai/ckpt_epoch_15.pth"
     # "./output/train/finetune/spai/ckpt_epoch_16.pth"
-    "./output/train/finetune/spai/ckpt_epoch_8.pth"
+    # "./output/train/finetune/spai/ckpt_epoch_8.pth"
+    "./weights/spai.pth"
 )
 
 # ==========================================
 # 定义测试CSV列表
 # ==========================================
 TEST_CSVS=(
-    "./data/eval_fake_dalle2_vs_all_real.csv"
-    "./data/eval_fake_dalle3_vs_all_real.csv"
-    # "./data/eval_fake_firefly_vs_all_real.csv"
-    # "./data/eval_fake_flux_vs_all_real.csv"
-    # "./data/eval_fake_gigagan_vs_all_real.csv"
-    # "./data/eval_fake_glide_vs_all_real.csv"
-    # "./data/eval_fake_mjv5_vs_all_real.csv"
-    # "./data/eval_fake_mjv61_vs_all_real.csv"
-    # "./data/eval_fake_sd2_vs_all_real.csv"
-    # "./data/eval_fake_sd3_vs_all_real.csv"
-    # "./data/eval_fake_sd13_vs_all_real.csv"
-    # "./data/eval_fake_sd14_vs_all_real.csv"
-    # "./data/eval_fake_sdxl_vs_all_real.csv"
+    "./data/fake_dalle2.csv"
+    "./data/fake_dalle3.csv"
+    "./data/fake_firefly.csv"
+    "./data/fake_flux.csv"
+    "./data/fake_gigagan.csv"
+    "./data/fake_glide.csv"
+    "./data/fake_mjv5.csv"
+    "./data/fake_mjv61.csv"
+    "./data/fake_sd2.csv"
+    "./data/fake_sd3.csv"
+    "./data/fake_sd13.csv"
+    "./data/fake_sd14.csv"
+    "./data/fake_sdxl.csv"
+    "./data/real_coco.csv"
+    "./data/real_fodb.csv"
+    "./data/real_imagenet.csv"
+    "./data/real_openimages.csv"
+    "./data/real_raise.csv"
 
 )
 
 # ==========================================
 # 公共参数
 # ==========================================
+CUDA_VISIBLE_DEVICES=3
 CFG="./configs/spai.yaml"
 BATCH_SIZE=8
 BASE_OUTPUT="./output/test"
@@ -68,14 +75,14 @@ for MODEL_PATH in "${MODELS[@]}"; do
         CSV_NAME=$(basename "${CSV_PATH}" .csv)
 
         # 输出目录按 模型/数据集 分层组织
-        OUTPUT_DIR="${BASE_OUTPUT}/${MODEL_NAME}/${CSV_NAME}"
+        OUTPUT_DIR="${BASE_OUTPUT}/${MODEL_NAME}"
 
         echo ""
         echo "  [${COUNT}/${TOTAL}] 模型: ${MODEL_NAME} | 数据集: ${CSV_NAME}"
         echo "  输出目录: ${OUTPUT_DIR}"
         echo "  开始时间: $(date '+%Y-%m-%d %H:%M:%S')"
 
-        python -m spai test \
+        CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} python -m spai infer \
             --cfg "${CFG}" \
             --batch-size ${BATCH_SIZE} \
             --model "${MODEL_PATH}" \
@@ -85,7 +92,7 @@ for MODEL_PATH in "${MODELS[@]}"; do
             --opt "DATA.NUM_WORKERS" "8" \
             --opt "MODEL.FEATURE_EXTRACTION_BATCH" "64" \
             --opt "DATA.TEST_PREFETCH_FACTOR" "1" \
-            --test-csv "${CSV_PATH}"
+            --input "${CSV_PATH}"
 
         if [ $? -eq 0 ]; then
             echo "  ✓ 完成 [${COUNT}/${TOTAL}] - $(date '+%Y-%m-%d %H:%M:%S')"
@@ -97,6 +104,11 @@ for MODEL_PATH in "${MODELS[@]}"; do
         fi
 
     done
+
+    python calc_final_metrics.py \
+    --scores-dir "${OUTPUT_DIR}" \
+    --output-csv "${OUTPUT_DIR}/final_results.csv" \
+    --tag-column "${TAG}"
 
     echo ""
     echo "  ✓ 模型 [${MODEL_NAME}] 全部数据集测试完毕"

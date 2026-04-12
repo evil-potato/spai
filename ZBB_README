@@ -6,7 +6,7 @@ python -m spai.tools.create_dmid_ldm_train_val_csv \
   --lsun_dir "./datasets/progan" \
   -o "./datasets/ldm_train_val.csv"
 
-训练命令
+训练命令（修改batch_size）
 CUDA_VISIBLE_DEVICES=2 python -m spai train \
   --cfg "./configs/spai.yaml" \
   --batch-size 16 \
@@ -21,6 +21,23 @@ CUDA_VISIBLE_DEVICES=2 python -m spai train \
   --opt "MODEL.FEATURE_EXTRACTION_BATCH" "64" \
   --opt "DATA.TEST_PREFETCH_FACTOR" "1" \
   --opt "TRAIN.BASE_LR" "1.1e-4"
+
+训练命令（修改梯度累积）
+CUDA_VISIBLE_DEVICES=3 python -m spai train \
+  --cfg "./configs/spai.yaml" \
+  --batch-size 8 \
+  --accumulation-steps 9 \
+  --pretrained "./weights/mfm_pretrain_vit_base.pth" \
+  --output "./output/train_cuda_3" \
+  --data-path "./datasets/ldm_train_val.csv" \
+  --tag "spai" \
+  --amp-opt-level "O2" \
+  --data-workers 4 \
+  --save-all \
+  --opt "DATA.VAL_BATCH_SIZE" "32" \
+  --opt "MODEL.FEATURE_EXTRACTION_BATCH" "64" \
+  --opt "DATA.TEST_PREFETCH_FACTOR" "1" 
+
 
  测试命令
 CUDA_VISIBLE_DEVICES=3 python -m spai test \

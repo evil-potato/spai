@@ -6,9 +6,9 @@
 MODELS=(
     # "./output/train/finetune/spai/ckpt_epoch_13.pth"
     # "./output/train/finetune/spai/ckpt_epoch_15.pth"
-    # "./output/train/finetune/spai/ckpt_epoch_16.pth"
-    # "./output/train/finetune/spai/ckpt_epoch_8.pth"
-    "./weights/spai.pth"
+    "./output/train_cuda_3/finetune/spai/ckpt_epoch_6.pth"
+    "./output/train_cuda_3/finetune/spai/ckpt_epoch_7.pth"
+    # "./weights/spai.pth"
 )
 
 # ==========================================

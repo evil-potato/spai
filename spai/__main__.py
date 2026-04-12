@@ -52,7 +52,8 @@ from spai.utils import (
     save_checkpoint,
     get_grad_norm,
     find_pretrained_checkpoints,
-    inf_nan_to_num
+    inf_nan_to_num,
+    natural_keys
 )
 from spai.models import losses
 from spai import metrics
@@ -279,6 +280,27 @@ def train(
     else:
         model_without_ddp.unfreeze_backbone()
         logger.info(f"No pretrained model. Backbone parameters are trainable.")
+
+    # Resume from checkpoint if requested
+    if config.MODEL.RESUME:
+        # Find the latest checkpoint in the output directory
+        checkpoints_dir = pathlib.Path(config.OUTPUT)
+        model_checkpoints = list(checkpoints_dir.glob("ckpt_epoch_*.pth"))
+        if not model_checkpoints:
+            raise FileNotFoundError(f"No checkpoints found in {checkpoints_dir}")
+        model_checkpoints.sort(key=lambda p: natural_keys(str(p)))
+        checkpoint_path = model_checkpoints[-1]  # Latest checkpoint
+        
+        checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        model_without_ddp.load_state_dict(checkpoint['model'])
+        optimizer.load_state_dict(checkpoint['optimizer'])
+        lr_scheduler.load_state_dict(checkpoint['lr_scheduler'])
+        config.defrost()
+        config.TRAIN.START_EPOCH = checkpoint['epoch'] + 1
+        config.freeze()
+        if amp_state is not None and 'amp' in checkpoint:
+            amp_state.load_state_dict(checkpoint['amp'])
+        logger.info(f"Resumed from {checkpoint_path} at epoch {checkpoint['epoch']}")
 
     test_datasets_names, test_datasets, test_loaders = build_loader_test(config, logger)
 
@@ -1065,34 +1087,45 @@ def train_one_epoch(
             if isinstance(criterion, TripletMarginLoss):
                 loss = criterion(anchor_outputs, positive_outputs, negative_outputs)
             else:
-                loss = criterion(outputs, targets)
+                loss = criterion(outputs.squeeze(), targets)
             loss = loss / config.TRAIN.ACCUMULATION_STEPS
             if config.AMP_OPT_LEVEL != "O0":
                 if use_torch_amp:
                     scaler.scale(loss).backward()
+                    # 这里不要 unscale_（否则会触发重复 unscale_ 的 RuntimeError）
+                    # 记录一个用于日志的近似 grad_norm（把缩放系数除掉）
+                    grad_norm = get_grad_norm(model.parameters()) / scaler.get_scale()
                 else:
                     with amp.scale_loss(loss, optimizer) as scaled_loss:
                         scaled_loss.backward()
-                if config.TRAIN.CLIP_GRAD:
-                    if use_torch_amp:
-                        scaler.unscale_(optimizer)
-                        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
-                    else:
-                        grad_norm = torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
-                else:
-                    if use_torch_amp:
-                        scaler.unscale_(optimizer)
-                        grad_norm = get_grad_norm(model.parameters())
+                    if config.TRAIN.CLIP_GRAD:
+                        grad_norm = torch.nn.utils.clip_grad_norm_(
+                            amp.master_params(optimizer), config.TRAIN.CLIP_GRAD)
                     else:
                         grad_norm = get_grad_norm(amp.master_params(optimizer))
             else:
                 loss.backward()
                 if config.TRAIN.CLIP_GRAD:
-                    grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), config.TRAIN.CLIP_GRAD)
+                    grad_norm = torch.nn.utils.clip_grad_norm_(
+                        model.parameters(), config.TRAIN.CLIP_GRAD)
                 else:
                     grad_norm = get_grad_norm(model.parameters())
             if (idx + 1) % config.TRAIN.ACCUMULATION_STEPS == 0:
-                optimizer.step()
+                if config.AMP_OPT_LEVEL != "O0":
+                    if use_torch_amp:
+                        scaler.unscale_(optimizer)
+                        if config.TRAIN.CLIP_GRAD:
+                            grad_norm = torch.nn.utils.clip_grad_norm_(
+                                model.parameters(), config.TRAIN.CLIP_GRAD
+                            )
+                        else:
+                            grad_norm = get_grad_norm(model.parameters())
+                        scaler.step(optimizer)
+                        scaler.update()
+                    else:
+                        optimizer.step()
+                else:
+                    optimizer.step()
                 optimizer.zero_grad()
                 lr_scheduler.step_update(epoch * num_steps + idx)
         else:
@@ -1134,6 +1167,16 @@ def train_one_epoch(
             lr_scheduler.step_update(epoch * num_steps + idx)
 
         torch.cuda.synchronize()
+
+        # Check for NaN in loss
+        if torch.isnan(loss):
+            logger.error(f"NaN detected in loss at epoch {epoch}, batch {idx}")
+            logger.error(f"Dataset indices: {dataset_idx}")
+            logger.error(f"Loss value: {loss.item()}")
+            # Optionally, save problematic batch for debugging
+            # torch.save({'samples': samples, 'targets': targets, 'dataset_idx': dataset_idx}, f'nan_batch_{epoch}_{idx}.pth')
+            # Continue training or raise error
+            raise RuntimeError(f"NaN loss detected at epoch {epoch}, batch {idx}")
 
         loss_meter.update(loss.item(), batch_size)
         norm_meter.update(grad_norm)
